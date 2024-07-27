@@ -1,0 +1,87 @@
+{
+  "version": 2,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default-ninja",
+      "hidden": true,
+      "generator": "Ninja",
+      "environment": {
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache"
+      },
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "x86",
+      "hidden": true,
+      "inherits": "default-ninja",
+      "cacheVariables": {
+        "CMAKE_ASM_NASM_FLAGS": "-f elf",
+        "CMAKE_C_FLAGS": "",
+        "CMAKE_CXX_FLAGS": "",
+        "CMAKE_LINKER": "ld.lld",
+        "CMAKE_EXE_LINKER_FLAGS": "-O0",
+        "CMAKE_TRY_COMPILE_TARGET_TYPE": "STATIC_LIBRARY",
+        "CMAKE_SYSTEM_NAME": "Generic",
+        "CMAKE_SYSTEM_PROCESSOR": "8086"
+      },
+      "environment": {
+        "CXX": "g++",
+        "CC": "gcc",
+        "SIZE_UTIL": "size"
+      },
+      "vendor": {
+        "jetbrains.com/clion": {
+          "toolchain": "MinGW"
+        }
+      }
+    },
+    {
+      "name": "debug",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "release",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "debug-x86",
+      "inherits": [
+        "debug",
+        "x86"
+      ],
+      "displayName": "Debug x86",
+      "description": "Debug x86 build using Ninja generator"
+    },
+    {
+      "name": "release-x86",
+      "inherits": [
+        "release",
+        "x86"
+      ],
+      "displayName": "Release x86",
+      "description": "Release x86 build using Ninja generator"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "Debug x86",
+      "configurePreset": "debug-x86"
+    },
+    {
+      "name": "Release x86",
+      "configurePreset": "release-x86"
+    }
+  ]
+}
