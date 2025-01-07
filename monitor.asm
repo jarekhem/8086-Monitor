@@ -6,13 +6,6 @@ global monitor_entry
 
 %include "monitor_config.inc"
 
-
-; extern print
-; extern print_dec
-; extern print_hex
-; extern print_digit
-; extern print_byte
-
 ; Constants
 prompt		equ '>'
 colon		equ ':'
@@ -24,17 +17,11 @@ enter_key	equ 0x0D
 LF      equ     0Ah
 CR      equ     0Dh
 
-; xaml	equ 0x24    ;  Last "opened" location
-; xamh	equ 0x25		
-; stl		equ 0x26	;  Store address
-; sth		equ 0x27	;  Store address 
-; l	    equ 0x28    ;  Hex value parsing
-; h	    equ 0x29    ;  Hex value parsing
-; ysav    equ 0x2A    ;  Used to see if hex value is given
-; mode    equ 0x2B    ;  $00=XAM, $74=STOR, $B8=BLOCK XAM
-; segm 	equ 0x2D
-
 command		equ 0x20
+addr        equ 0x22
+segm        equ 0x24
+value       equ 0x26
+repeat      equ 0x28
 
 inBuf       equ 0x200
 
@@ -66,15 +53,6 @@ read_char:
 	jnge .already_upper
 	sub al, 32
 .already_upper:
-; 	cmp bl, 0
-; 	jne .not_mem_port
-; .not_mem_port:
-; 	cmp bl, 1
-; 	jne .not_read_write
-; .not_read_write:
-; 	cmp bl, 2
-; 	jne .not_byte_word
-; .not_byte_word:
 	xor bh, bh
 	mov [inBuf+bx], al		; Add to text buffer.
 	cmp al, enter_key	
@@ -100,7 +78,7 @@ read_char:
 	js start_prompt
 	jmp read_char
 .line_complete:
-; decode command:
+;decode command
 	xor ax, ax
 	xor bx, bx
 	xor cx, cx
@@ -112,8 +90,8 @@ read_char:
 	cmp al, 'P'	; is port?
 	jne wrong_cmd
 	or dl, 0x01
-.is_mem:
 
+.is_mem:
 	inc bl
 	mov al, [inBuf+bx]
 	cmp al, 'R'	; is read?
@@ -121,8 +99,8 @@ read_char:
 	cmp al, 'W'	; is write?
 	jne wrong_cmd
 	or dl, 0x02
-.is_read:
 
+.is_read:
 	inc bl
 	mov al, [inBuf+bx]
 	cmp al, 'B'	; is byte?
@@ -130,40 +108,194 @@ read_char:
 	cmp al, 'W'	; is word?
 	jne wrong_cmd
 	or dl, 0x04
-.is_byte:
 
-	mov al, CR
+.is_byte:
+    mov byte [command], dl
+
+    mov al, CR
 	call monitor_putch
     mov al, LF
     call monitor_putch
 
-; parse address:
-; parse_hex:
-; 	mov al, [inBuf+bx]	; Get character for hex test.
-; 	xor al, 0x30		; Map digits $0-9
-; 	cmp al, 0x0A		; Digit?
-; 	jc digit			; Yes.
-; 	adc al, 0x89		; Map letter "A"-"F" to $FA-$FF
-; 	cmp al, 0xFA		; Hex letter?
-; 	jc not_hex		; No, character not hex.
-; digit:
-; 	sal al, 4		; Hex digit to MSD of A.
-; 	mov cx, 0x04		; Shift count.
-; shift_hex:
-; 	sal al, 1		; Hex digit left, MSB to carry.
-; 	rcl byte[l], 1
-; 	rcl byte[h], 1
-; 	loop shift_hex		; 4 shifts
-; not_hex:
-	; cmp bl, byte [ysav]	; Check if L, H empty (no hex digits).
-	; je ESCAPE		; Yes, generate ESC sequence.
-	; test byte [mode], 0b01000000
-	; jz NOTSTOR		; B6 = 0 for STOR, 1 for XAM and BLOCK XAM
-	; 			; LSD's of hex data.
+decode_addr:
+    mov word [addr], 0
+    mov word [repeat], 0
 
-	mov al, enter_key
-	call monitor_putch
-	jmp start_prompt
+    call skip_blank
+    call parse_hex
+ 	mov al, [inBuf+bx]	; Get character for hex test.
+    cmp al, ':' ; was it segment?.
+    jne .not_segment
+    test byte [command], 0x01 ; is it port access?
+    jnz wrong_cmd ; yes, wrong command - segment is not allowed
+    ; memory access, store segment
+    mov word [segm], dx
+    call print_segm
+    inc bl
+    call parse_hex
+.not_segment:
+    mov word [addr], dx
+    call print_addr
+    test byte [command], 0x02 ; is it write?
+    jz .is_read                ; no, read - parse value
+    mov al, [inBuf+bx]
+    cmp al, '=' ; assign?
+    jne .is_read
+    inc bl
+    call parse_hex
+    mov word [value], dx
+    call print_value
+.is_read:
+    mov al, [inBuf+bx]
+    cmp al, '*' ; repeat?
+    jne execute
+    inc bl
+    xor dx, dx
+    call parse_hex
+    mov word [repeat], dx
+
+
+execute:
+    mov dx, [segm]
+    mov es, dx
+
+    cmp byte [command], 0x04 ; mem read word?
+    je .read_mem_word
+    cmp byte [command], 0x00 ; mem read byte?
+    je .read_mem_byte
+    cmp byte [command], 0x05 ; port read word?
+    je .read_port_word
+    cmp byte [command], 0x01 ; port read byte?
+    je .read_port_byte
+    cmp byte [command], 0x06 ; mem write word?
+    je .write_mem_word
+    cmp byte [command], 0x02 ; mem write byte?
+    je .write_mem_byte
+    cmp byte [command], 0x07 ; port write word?
+    je .write_port_word
+    cmp byte [command], 0x03 ; port write byte?
+    je .write_port_byte
+    jmp wrong_cmd
+
+.read_mem_byte:
+    xor ax, ax
+    mov bx, [addr]
+    mov al, [es:bx]
+    mov word [value], ax
+    jmp .end
+
+.read_mem_word:
+    mov bx, [addr]
+    mov ax, [es:bx]
+    mov word [value], ax
+    jmp .end
+
+.read_port_byte:
+    xor ax, ax
+    mov dx, [addr]
+    in al, dx
+    mov word [value], ax
+    jmp .end
+
+.read_port_word:
+    mov cx, [repeat]
+.prw_loop:
+    mov dx, [addr]
+    in ax, dx
+    mov word [value], ax
+    mov ax, cx
+    and ax, 0x0007    ; check repeat mod 8
+    jnz .prw_loop_print
+    mov al, CR
+    call monitor_putch
+    mov al, LF
+    call monitor_putch
+.prw_loop_print:
+    mov al, ' '
+    call monitor_putch
+    mov dx, [value]
+    mov al, dl
+    call print_byte
+    mov al, ' '
+    call monitor_putch
+    mov al, dh
+    call print_byte
+
+    loop .prw_loop
+    jmp start_prompt
+
+.write_mem_byte:
+    mov bx, [addr]
+    mov al, [value]
+    mov byte [es:bx], al
+    jmp .end
+
+.write_mem_word:
+    mov bx, [addr]
+    mov ax, [value]
+    mov word [es:bx], ax
+    jmp .end
+
+.write_port_byte:
+    mov dx, [addr]
+    mov al, [value]
+    out dx, al
+    jmp .end
+
+.write_port_word:
+    mov dx, [addr]
+    mov ax, [value]
+    out dx, ax
+.end:
+    call print_value
+    jmp start_prompt
+
+; parse hex value
+; dx - returns the parsed value
+parse_hex:
+    mov dx, 0
+.next_char:
+ 	mov al, [inBuf+bx]	; Get character for hex test.
+ 	xor al, 0x30		; Map digits $0-9
+ 	cmp al, 0x0A		; Digit?
+ 	jc .digit			; Yes.
+ 	adc al, 0x89		; Map letter "A"-"F" to $FA-$FF
+ 	cmp al, 0xFA		; Hex letter?
+ 	jc .not_hex		; No, character not hex.
+.digit:
+    inc bl            ; Advance text index.
+    mov cl, 4       ; Shift count.
+ 	sal al, cl		; Hex digit to MSD of A.
+.shift_hex:
+ 	sal al, 1		; Hex digit left, MSB to carry.
+ 	rcl dx, 1
+ 	loop .shift_hex		; 4 shifts
+ 	jmp .next_char
+.not_hex:
+    ret
+
+print_segm:
+    mov word dx, [segm]
+    call print_addr
+    mov al, ':'
+    call monitor_putch
+    ret
+
+print_value:
+    mov al, ' '
+    call monitor_putch
+    mov word dx, [value]
+    call print_addr
+    ret
+
+; print hex address
+; dx - the address
+print_addr:
+  	mov al, dh
+  	call print_byte
+  	mov al, dl
+  	call print_byte
+  	ret
 
 wrong_cmd:
 	mov al, ' '
@@ -171,6 +303,13 @@ wrong_cmd:
 	mov al, '?'
 	call monitor_putch
 	jmp start_prompt
+
+skip_blank:
+    inc bl
+    mov al, [inBuf+bx]
+    cmp al, ' '
+    jbe skip_blank
+    ret
 
 print_hex:
 	push ax
@@ -196,189 +335,3 @@ print_byte:
 	rol	al,1
 	call print_hex
 	ret
-
-;----------------------------------------------------------
-; RESET:
-; 	xor ax, ax
-; 	xor bx, bx
-; 	xor cx, cx
-; 	mov es, ax
-; 	clc
-; 	mov bl, 0x7F		
-; NOTCR:
-; 	cmp al, backspace	; Backspace?
-; 	je BACKSPACE		; Yes.
-; 	cmp al, escape		; ESC?
-; 	je ESCAPE		; Yes.
-; 	inc bl			; Advance text index.
-; 	jns NEXTCHAR		; Auto ESC if > 127.
-; ESCAPE:
-; 	; mov al, enter_key
-; 	; call serial_putch
-; 	mov al, prompt		; "\".
-; 	call serial_putch		; Output it.
-; GETLINE:
-; 	mov al, enter_key		; CR.
-; 	call serial_putch		; Output it.
-; 	mov bl, 1		; Initialize text index.
-; BACKSPACE:
-; 	dec bl			; Back up text index.
-; 	js GETLINE		; Beyond start of line, reinitialize.
-; 	; mov al, space		; Overwrite the old character with a space
-; 	; call serial_putch
-; 	; mov al, backspace
-; 	; call serial_putch	; Move back by one character again
-; NEXTCHAR:
-; 	call serial_getch		; Key ready?
-; 	jnc NEXTCHAR		; Loop until ready.
-; 	cmp al, 'a'		; convert to upper if needed
-; 	jnge .ISUPPER
-; 	sub al, 32
-; .ISUPPER:
-; 	xor bh, bh
-; 	mov [inBuf+bx], al	; Add to text buffer.
-; 	call serial_putch		; Display character.
-; 	cmp al, enter_key	; CR?
-; 	jne NOTCR		; No.
-; 	mov bl, 0xFF		; Reset text index.
-; 	mov ax, 0x00		; For XAM mode.
-; 	mov cx, ax		; 0 -> X.
-; SETBLOCK:
-; 	shl al, 1		; Leaves $7B if setting STOR mode
-; SETSTOR:
-; 	shl al, 1		; Leaves $7B if setting STOR mode
-; SETMODE:
-; 	mov [mode], al		; $00 = XAM, $74 = STOR, $B8 = BLOK XAM
-; BLSKIP:
-; 	inc bl			; Advance text index.
-; NEXTITEM:
-; 	xor bh, bh
-; 	mov al, [inBuf+bx]	; Get character.
-; 	cmp al, enter_key	; CR?
-; 	je GETLINE		; Yes, done this line.
-; 	cmp al, '.'		; "."?
-; 	jl BLSKIP		; Skip delimiter.
-; 	je SETBLOCK		; Set BLOCK XAM mode.
-; 	cmp al, ':'		; ":"?
-; 	je SETSTOR		; Yes, set STOR mode.
-; 	cmp al, 'R'		; "R"?
-; 	je RUN			; Yes, run user program.
-; 	cmp al, 'S'		; "S"?
-; 	je SETSEG			; Yes, set the segment.
-; 	cmp al, 'I'		; "I"?
-; 	je IOREADB			; Yes, read byte from IO addr.
-; 	mov word [l], 0
-; 	mov [ysav], bl		; Save Y for comparison.
-; NEXTHEX:
-; 	xor bh, bh
-; 	mov al, [inBuf+bx]	; Get character for hex test.
-; 	xor al, 0x30		; Map digits $0-9
-; 	cmp al, 0x0A		; Digit?
-; 	jc DIG			; Yes.
-; 	adc al, 0x89		; Map letter "A"-"F" to $FA-$FF
-; 	cmp al, 0xFA		; Hex letter?
-; 	jc NOTHEX		; No, character not hex.
-; DIG:
-; 	sal al, 4		; Hex digit to MSD of A.
-; 	mov cx, 0x04		; Shift count.
-; HEXSHIFT:
-; 	sal al, 1		; Hex digit left, MSB to carry.
-; 	rcl byte[l], 1
-; 	rcl byte[h], 1
-; 	loop HEXSHIFT		; 4 shifts
-
-; 	inc bl			; Advance text index.
-; 	jmp NEXTHEX		; Always taken. Check next character for hex.
-; NOTHEX:
-; 	cmp bl, byte [ysav]	; Check if L, H empty (no hex digits).
-; 	je ESCAPE		; Yes, generate ESC sequence.
-; 	test byte [mode], 0b01000000
-; 	jz NOTSTOR		; B6 = 0 for STOR, 1 for XAM and BLOCK XAM
-; 				; LSD's of hex data.
-	
-; 	push bx
-; 	mov cl, [l] 
-; 	mov bx, [stl]
-; 	mov es:[bx], cl	; Store at current 'store index'
-; 	xor cx, cx
-; 	pop bx
-
-; 	inc byte [stl]	; Increment store index.
-; 	jne NEXTITEM
-; 	inc byte [sth]	; Increment store index.
-; TONEXTITEM:
-; 	jmp NEXTITEM		; Get next command item.
-; RUN:
-; 	call word [xaml]		; Run at current XAM index.
-; 	jmp GETLINE
-; SETSEG:
-; 	mov ax, [xaml]
-; 	mov es, ax		; xam -> ES.
-; 	jmp GETLINE
-; IOWRITEB:
-; 	mov dx, [xaml]
-; 	mov es, ax		; xam -> ES.
-; 	jmp GETLINE
-; IOREADB:
-; 	xor ax, ax
-; 	mov dx, [xaml]
-; 	in al, dx		
-; 	call PRBYTE
-; 	jmp GETLINE
-; NOTSTOR:
-; 	test byte al, [mode]
-; 	js XAMNEXT		; B7 = 0 for XAM, 1 for BLOCK XAM
-; SETADR:
-; 				; Copy hex data to
-; 	push ax
-; 	mov ax, [l] 
-; 	mov [stl], ax
-; 	mov [xaml], ax
-; 	pop ax
-; NXTPRNT:
-; 	jnz PRDATA		; NE means no address to print.
-; 	mov al, enter_key		; CR.
-; 	call serial_putch		; Output it.
-; 	mov ax, [xaml]
-; 	call print_hex
-; 	mov al, ':'		; ":".
-; 	call serial_putch		; Output it.
-; PRDATA:
-; 	mov al, ' '		; Blank.
-; 	call serial_putch		; Output it.
-
-; 	push bx
-; 	mov bx, [xaml]
-; 	mov al, es:[bx]
-; 	pop bx
-; 	call PRBYTE		; Output it in hex format.
-; XAMNEXT:
-; 	mov byte [mode], 0x00	; 0 -> MODE (XAM mode).
-; 	push ax
-; 	mov al, [xaml]
-; 	cmp al, [l]
-; 	mov al, [xamh]
-; 	sbb al, [h]
-; 	pop ax
-; 	jnc TONEXTITEM		; Not less, so no more data to output.
-; 	inc byte [xaml]			; Increment 'examine index'.
-; 	jnz MOD16HK
-; 	inc byte [xamh]
-; MOD16HK:
-; 	mov al, [xaml]		; Check low-order 'examine index' byte
-; 	and al, 0x0F		; For MOD 16 = 0
-; 	jmp NXTPRNT		; Always taken.
-; PRBYTE:
-; 	push ax			; Save A for LSD.
-; 	shr al, 4		; MSD to LSD position.
-; 	call PRHEX		; Output hex digit.
-; 	pop ax			; Restore A.
-; PRHEX:
-; 	and al, 0x0F		; Mask LSD for hex print.
-; 	or al, '0'		; Add "0".
-; 	cmp al, '9'+1		; Digit?
-; 	jl .PR			; Yes, output it.
-; 	add al, 7		; Add offset for character.
-; .PR:
-; 	call serial_putch
-; 	ret
